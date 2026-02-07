@@ -7,7 +7,7 @@ from datetime import datetime
 import sqlite3
 from typing import Iterable, List
 
-from .candle_builder import Candle
+from src.data.candle_builder import Candle
 
 
 @dataclass(frozen=True)

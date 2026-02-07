@@ -4,7 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 from typing import Optional
+
+from dotenv import find_dotenv, load_dotenv
+
+
+def _load_env_files() -> None:
+    """Load environment variables from .env or Alpaca.env if present."""
+
+    load_dotenv(find_dotenv(), override=False)
+    project_root = Path(__file__).resolve().parents[1]
+    alpaca_env = project_root / "Alpaca.env"
+    if alpaca_env.exists():
+        load_dotenv(alpaca_env, override=False)
+
+
+_load_env_files()
 
 
 @dataclass(frozen=True)

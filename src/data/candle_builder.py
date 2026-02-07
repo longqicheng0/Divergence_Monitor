@@ -103,3 +103,8 @@ class CandleBuilder:
             volume=self._current.volume + bar.volume,
         )
         return None
+
+    def finalize(self) -> Optional[Candle]:
+        """Return the last in-progress candle (if any)."""
+
+        return self._current

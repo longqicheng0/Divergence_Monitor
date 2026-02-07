@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import logging
-from typing import Awaitable, Callable, Dict, Iterable, List, Optional
+from typing import Awaitable, Callable, Dict, Iterable, List
 
 import websockets
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-from .candle_builder import Bar
+from src.data.candle_builder import Bar
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,39 @@ class AlpacaDataClient:
             ]
         return results
 
+    def get_bars_range(
+        self,
+        symbols: Iterable[str],
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+    ) -> Dict[str, List[Bar]]:
+        """Fetch bars for a given time range from Alpaca REST API."""
+
+        request = StockBarsRequest(
+            symbol_or_symbols=list(symbols),
+            timeframe=self._timeframe_from_str(timeframe),
+            start=start,
+            end=end,
+            feed=self._config.feed,
+        )
+        bars = self._rest.get_stock_bars(request)
+        results: Dict[str, List[Bar]] = {symbol: [] for symbol in symbols}
+        for symbol, series in bars.data.items():
+            results[symbol] = [
+                Bar(
+                    symbol=symbol,
+                    ts=bar.timestamp,
+                    open=float(bar.open),
+                    high=float(bar.high),
+                    low=float(bar.low),
+                    close=float(bar.close),
+                    volume=float(bar.volume),
+                )
+                for bar in series
+            ]
+        return results
+
     async def stream_bars(self, symbols: Iterable[str], on_bar: BarHandler) -> None:
         """Stream live bars using Alpaca WebSocket API."""
 
@@ -85,6 +118,8 @@ class AlpacaDataClient:
         if not symbols_list:
             raise ValueError("No symbols provided for streaming")
 
+        backoff = 1.0
+        max_backoff = 30.0
         while True:
             try:
                 async with websockets.connect(self._config.stream_url, ping_interval=20) as ws:
@@ -92,11 +127,13 @@ class AlpacaDataClient:
                     await self._subscribe(ws, symbols_list)
                     async for message in ws:
                         await self._handle_message(message, on_bar)
+                backoff = 1.0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - reconnect handling
                 logger.exception("Stream error: %s", exc)
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(max_backoff, backoff * 2)
 
     async def _authenticate(self, ws: websockets.WebSocketClientProtocol) -> None:
         auth_msg = {

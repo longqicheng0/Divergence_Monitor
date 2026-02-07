@@ -15,18 +15,22 @@ def build_discord_payload(
     symbol: str,
     timeframe: str,
     signal_type: str,
+    strength: str,
+    confirmations: list[str],
     reason: str,
     pivot_ts: str,
 ) -> Dict[str, Any]:
     """Build a Discord webhook payload."""
 
-    title = f"{signal_type.title()} divergence detected"
+    title = f"{signal_type.title()} divergence ({strength})"
+    confirmations_value = ", ".join(confirmations) if confirmations else "None"
     embed = {
         "title": title,
         "fields": [
             {"name": "Symbol", "value": symbol, "inline": True},
             {"name": "Timeframe", "value": timeframe, "inline": True},
             {"name": "Pivot", "value": pivot_ts, "inline": False},
+            {"name": "Confirmations", "value": confirmations_value, "inline": False},
             {"name": "Reason", "value": reason, "inline": False},
         ],
         "color": 3066993 if signal_type == "bullish" else 15158332,
