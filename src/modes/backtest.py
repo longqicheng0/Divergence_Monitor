@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from statistics import mean, median
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from src.alerts.discord import build_discord_payload, send_discord_alert
@@ -16,6 +17,7 @@ from src.indicators.macd import compute_macd
 from src.indicators.rsi import compute_rsi
 from src.logging_config import get_logger
 from src.modes.live import parse_timeframe_minutes, signal_id
+from src.simulations.trade_simulator import SignalEvent, simulate_portfolio
 from src.strategy.divergence import DivergenceConfig, detect_divergence
 from src.ui.report import plot_backtest_report
 
@@ -61,6 +63,76 @@ def _compute_summary(candles: List[Candle], bullish: int, bearish: int) -> Backt
     )
 
 
+def _confirmation_bucket(confirmations: List[str]) -> str:
+    if "macd" in confirmations and "kdj" in confirmations:
+        return "macd+kdj"
+    if "macd" in confirmations:
+        return "macd_only"
+    if "kdj" in confirmations:
+        return "kdj_only"
+    return "none"
+
+
+def _log_accuracy_metrics(
+    candles_by_symbol: Dict[str, List[Candle]],
+    events_by_symbol: Dict[str, List[SignalEvent]],
+    horizons: List[int],
+    logger,
+    label: str,
+) -> None:
+    returns_by: Dict[str, Dict[str, Dict[int, List[float]]]] = {
+        "bullish": {},
+        "bearish": {},
+    }
+
+    def _add_return(direction: str, bucket: str, horizon: int, value: float) -> None:
+        returns_by.setdefault(direction, {}).setdefault(bucket, {}).setdefault(horizon, []).append(value)
+
+    for symbol, events in events_by_symbol.items():
+        candles = candles_by_symbol.get(symbol, [])
+        if not candles:
+            continue
+        closes = [candle.close for candle in candles]
+        for event in events:
+            entry_index = event.pivot_index
+            if entry_index >= len(closes):
+                continue
+            entry_price = closes[entry_index]
+            bucket = _confirmation_bucket(event.confirmations)
+            for horizon in horizons:
+                exit_index = entry_index + horizon
+                if exit_index >= len(closes):
+                    continue
+                exit_price = closes[exit_index]
+                if event.signal_type == "bullish":
+                    ret = (exit_price - entry_price) / entry_price
+                else:
+                    ret = (entry_price - exit_price) / entry_price
+                _add_return(event.signal_type, bucket, horizon, ret)
+                _add_return(event.signal_type, "all", horizon, ret)
+
+    logger.info("Accuracy metrics (%s, returns are directionally adjusted)", label)
+    for direction, buckets in returns_by.items():
+        logger.info("%s signals:", direction.capitalize())
+        for bucket, horizon_map in buckets.items():
+            for horizon, returns in horizon_map.items():
+                if not returns:
+                    continue
+                hits = sum(1 for value in returns if value > 0)
+                hit_rate = hits / len(returns)
+                avg_ret = mean(returns)
+                med_ret = median(returns)
+                logger.info(
+                    "  %s h=%s count=%s hit_rate=%.1f%% avg=%.3f%% median=%.3f%%",
+                    bucket,
+                    horizon,
+                    len(returns),
+                    hit_rate * 100,
+                    avg_ret * 100,
+                    med_ret * 100,
+                )
+
+
 async def run_backtest(
     config: Config,
     client: AlpacaDataClient,
@@ -101,8 +173,12 @@ async def run_backtest(
     bearish_strong = 0
     bearish_normal = 0
     strategy = DivergenceConfig(use_macd=True, use_kdj=True)
+    rsi_only_strategy = DivergenceConfig(use_macd=False, use_kdj=False)
     signal_points: List[Tuple[str, str, str]] = []
+    events_by_symbol: Dict[str, List[SignalEvent]] = {symbol: [] for symbol in symbols}
+    raw_events_by_symbol: Dict[str, List[SignalEvent]] = {symbol: [] for symbol in symbols}
     seen_signals: set[str] = set()
+    seen_raw_signals: set[str] = set()
 
     for symbol, candles in candles_by_symbol.items():
         closes: List[float] = []
@@ -114,7 +190,7 @@ async def run_backtest(
             highs.append(candle.high)
             lows.append(candle.low)
             timestamps.append(candle.ts)
-            logger.info(
+            logger.debug(
                 "Candle processed %s %s %s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f",
                 symbol,
                 timeframe,
@@ -147,6 +223,39 @@ async def run_backtest(
                 d_values,
                 strategy,
             )
+            raw_signal = detect_divergence(
+                symbol,
+                timeframe,
+                closes,
+                timestamps,
+                rsi,
+                None,
+                None,
+                None,
+                None,
+                None,
+                rsi_only_strategy,
+            )
+            if raw_signal:
+                if len(closes) - 1 == raw_signal.pivot_2_index + rsi_only_strategy.pivot_right:
+                    raw_key = signal_id(
+                        raw_signal.symbol,
+                        raw_signal.timeframe,
+                        raw_signal.signal_type,
+                        raw_signal.pivot_2_ts,
+                    )
+                    if raw_key not in seen_raw_signals:
+                        seen_raw_signals.add(raw_key)
+                        raw_events_by_symbol.setdefault(raw_signal.symbol, []).append(
+                            SignalEvent(
+                                symbol=raw_signal.symbol,
+                                signal_type=raw_signal.signal_type,
+                                strength=raw_signal.strength,
+                                confirmations=raw_signal.confirmations,
+                                pivot_index=raw_signal.pivot_2_index,
+                                pivot_ts=raw_signal.pivot_2_ts,
+                            )
+                        )
             if not signal:
                 continue
 
@@ -162,6 +271,16 @@ async def run_backtest(
             seen_signals.add(signal_key)
             signal_points.append(
                 (signal.pivot_2_ts.isoformat(), signal.signal_type, signal.strength)
+            )
+            events_by_symbol.setdefault(signal.symbol, []).append(
+                SignalEvent(
+                    symbol=signal.symbol,
+                    signal_type=signal.signal_type,
+                    strength=signal.strength,
+                    confirmations=signal.confirmations,
+                    pivot_index=signal.pivot_2_index,
+                    pivot_ts=signal.pivot_2_ts,
+                )
             )
             if signal.signal_type == "bullish":
                 bullish_count += 1
@@ -220,5 +339,57 @@ async def run_backtest(
         logger.info("First timestamp: %s", summary.first_ts.isoformat())
         logger.info("Last timestamp: %s", summary.last_ts.isoformat())
     if all_candles:
+        _log_accuracy_metrics(
+            candles_by_symbol,
+            events_by_symbol,
+            horizons=[3, 6],
+            logger=logger,
+            label="confirmed (RSI + MACD/KDJ)",
+        )
+        _log_accuracy_metrics(
+            candles_by_symbol,
+            raw_events_by_symbol,
+            horizons=[3, 6],
+            logger=logger,
+            label="RSI-only (no confirmations)",
+        )
+        confirmed_results = simulate_portfolio(
+            candles_by_symbol,
+            events_by_symbol,
+            starting_cash=1000.0,
+            buy_pct=1.0,
+            sell_pct=1.0,
+        )
+        rsi_only_results = simulate_portfolio(
+            candles_by_symbol,
+            raw_events_by_symbol,
+            starting_cash=1000.0,
+            buy_pct=1.0,
+            sell_pct=1.0,
+        )
+        for symbol, result in confirmed_results.items():
+            logger.info(
+                "Simulation (confirmed, sell=100%%) %s: start=$%.2f end=$%.2f return=%.2f%% buys=%s sells=%s cash=$%.2f shares=%.4f",
+                symbol,
+                result["starting_cash"],
+                result["ending_value"],
+                result["return_pct"],
+                int(result["buy_count"]),
+                int(result["sell_count"]),
+                result["cash"],
+                result["shares"],
+            )
+        for symbol, result in rsi_only_results.items():
+            logger.info(
+                "Simulation (RSI-only, sell=100%%) %s: start=$%.2f end=$%.2f return=%.2f%% buys=%s sells=%s cash=$%.2f shares=%.4f",
+                symbol,
+                result["starting_cash"],
+                result["ending_value"],
+                result["return_pct"],
+                int(result["buy_count"]),
+                int(result["sell_count"]),
+                result["cash"],
+                result["shares"],
+            )
         plot_backtest_report(all_candles, signal_points, timeframe, strategy)
     return summary

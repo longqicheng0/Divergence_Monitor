@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from typing import Iterable, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -70,6 +71,10 @@ def plot_backtest_report(
     logger = get_logger(__name__)
     if not candles:
         logger.info("No candles to plot.")
+        return
+
+    if os.getenv("BACKTEST_NO_PLOT", "").lower() in {"1", "true", "yes"}:
+        logger.info("Plotting disabled via BACKTEST_NO_PLOT.")
         return
 
     width = 0.7

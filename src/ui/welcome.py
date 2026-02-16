@@ -12,16 +12,16 @@ def _render_banner(text: str) -> str:
     try:
         from pyfiglet import Figlet
 
-        figlet = Figlet(font="slant")
+        figlet = Figlet(font="slant", width=120)
         return figlet.renderText(text)
     except Exception:
         return textwrap.dedent(
             f"""
-             ____  _                                  _
-            |  _ \\(_)_   _____ _ __ __ _  ___  _ __  | |_ ___
-            | | | | \ \ / / _ \\ '__/ _` |/ _ \\| '_ \\ | __/ _ \\
-            | |_| | |\\ V /  __/ | | (_| | (_) | | | || ||  __/
-            |____/|_| \\_/ \\___|_|  \\__, |\\___/|_| |_| \\__\\___|
+             ____  _                                
+            |  _ \\(_)_   _____ _ __ __ _  ___  _ __ 
+            | | | | \ \ / / _ \\ '__/ _` |/ _ \\| '_ \\
+            | |_| | |\\ V /  __/ | | (_| | (_) | | | |
+            |____/|_| \\_/ \\___|_|  \\__, |\\___/|_| |_|
                                    |___/
             {text}
             """

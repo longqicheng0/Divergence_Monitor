@@ -94,7 +94,7 @@ async def main() -> None:
 
     if args.interactive and args.mode is None:
         header = build_welcome(
-            "Divergence_Monitor",
+            "Divergence Monitor",
             "Monitors stocks for price vs RSI divergence and confirms with MACD/KDJ.",
         )
         choice = select_menu_option(header)
